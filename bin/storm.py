@@ -283,7 +283,8 @@ def run_client_jar(klass, args, daemon=False, client=True, extrajvmopts=[]):
         jvmtype="-client",
         extrajars=extra_jars,
         main_class_args=args.main_args,
-        daemon=False,
+        daemon=daemon,
+        client=client,
         jvmopts=JAR_JVM_OPTS + extrajvmopts + ["-Dstorm.jar=" + jarfile] +
                 ["-Dstorm.dependency.jars=" + ",".join(local_jars)] +
                 ["-Dstorm.dependency.artifacts=" + json.dumps(artifact_to_file_jars)],
@@ -539,6 +540,14 @@ def initialize_upload_credentials_subcommand(subparsers):
     sub_parser.add_argument(
         "-u", "--user", default=None,
         help="""name of the owner of the topology (security precaution)"""
+    )
+
+    # If set, this flag will become true meaning that user expects non-empty creds to be uploaded.
+    # Command exits with non-zero code if uploaded creds collection is empty.
+    sub_parser.add_argument(
+        "-e", "--exception-when-empty", action='store_true',
+        help="""If specified, throw exception if there are no credentials uploaded. 
+                Otherwise, it is default to be false"""
     )
 
     sub_parser.add_argument(
@@ -1202,7 +1211,7 @@ def rebalance(args):
             if new_value < 0:
                 raise argparse.ArgumentTypeError("Executor count should be > 0")
         except:
-            raise argparse.ArgumentTypeError("Should be in the form component_name:new_executor_count")
+            raise argparse.ArgumentTypeError("Should be in the form component_name=new_executor_count")
     exec_storm_class(
         "org.apache.storm.command.Rebalance",
         main_class_args=remove_common_options(sys.argv[2:]), storm_config_opts=args.storm_config_opts,

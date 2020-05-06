@@ -43,6 +43,7 @@ import org.apache.storm.scheduler.resource.strategies.priority.ISchedulingPriori
 import org.apache.storm.scheduler.resource.strategies.scheduling.IStrategy;
 import org.apache.storm.security.auth.IAuthorizer;
 import org.apache.storm.security.auth.IHttpCredentialsPlugin;
+import org.apache.storm.utils.DaemonConfigValidation;
 import org.apache.storm.validation.ConfigValidation;
 import org.apache.storm.validation.Validated;
 
@@ -121,6 +122,13 @@ public class DaemonConfig implements Validated {
     public static final String BLACKLIST_SCHEDULER_RESUME_TIME = "blacklist.scheduler.resume.time.secs";
 
     /**
+     * Enables blacklisting support for supervisors with failed send assignment calls.
+     */
+    @IsBoolean
+    public static final String BLACKLIST_SCHEDULER_ENABLE_SEND_ASSIGNMENT_FAILURES =
+            "blacklist.scheduler.enable.send.assignment.failures";
+
+    /**
      * The class that the blacklist scheduler will report the blacklist.
      */
     @NotNull
@@ -169,6 +177,12 @@ public class DaemonConfig implements Validated {
      */
     @IsNumber
     public static final String STORM_HEALTH_CHECK_TIMEOUT_MS = "storm.health.check.timeout.ms";
+
+    /**
+     * Boolean setting to configure if health checks should fail when timeouts occur or not.
+     */
+    @IsBoolean
+    public static final String STORM_HEALTH_CHECK_FAIL_ON_TIMEOUTS = "storm.health.check.fail.on.timeouts";
 
     /**
      * This is the user that the Nimbus daemon process is running as. May be used when security is enabled to authorize actions in the
@@ -471,13 +485,13 @@ public class DaemonConfig implements Validated {
     /**
      * A list of users allowed to view logs via the Log Viewer.
      */
-    @IsStringList
+    @IsStringOrStringList
     public static final String LOGS_USERS = "logs.users";
 
     /**
      * A list of groups allowed to view logs via the Log Viewer.
      */
-    @IsStringList
+    @IsStringOrStringList
     public static final String LOGS_GROUPS = "logs.groups";
 
     /**
@@ -743,6 +757,23 @@ public class DaemonConfig implements Validated {
     @IsPositiveNumber
     @IsInteger
     public static final String SUPERVISOR_BLOBSTORE_DOWNLOAD_MAX_RETRIES = "supervisor.blobstore.download.max_retries";
+
+    /**
+     * A map with keys mapped to each NUMA Node on the supervisor that will be used
+     * by scheduler. CPUs, memory and ports available on each NUMA node will be provided.
+     * Each supervisor will have different map of NUMAs.
+     * Example: "supervisor.numa.meta": {
+     *  "0": { "numa.memory.mb": 122880, "numa.cores": [ 0, 12, 1, 13, 2, 14, 3, 15, 4, 16, 5, 17],
+     *      "numa.ports": [6700, 6701]},
+     *  "1" : {"numa.memory.mb": 122880, "numa.cores": [ 6, 18, 7, 19, 8, 20, 9, 21, 10, 22, 11, 23],
+     *      "numa.ports": [6702, 6703], "numa.generic.resources.map": {"gpu.count" : 1}}
+     *  }
+     */
+    @IsMapEntryCustom(
+            keyValidatorClasses = { ConfigValidation.StringValidator.class },
+            valueValidatorClasses = { DaemonConfigValidation.NumaEntryValidator.class}
+    )
+    public static final String SUPERVISOR_NUMA_META = "supervisor.numa.meta";
 
     /**
      * What blobstore implementation nimbus should use.

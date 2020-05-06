@@ -12,7 +12,10 @@
 
 package org.apache.storm.security.auth.kerberos;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.security.Principal;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -101,10 +104,10 @@ public class AutoTGT implements IAutoCredentials, ICredentialsRenewer, IMetricsR
 
     public static void main(String[] args) throws Exception {
         AutoTGT at = new AutoTGT();
-        Map<String, Object> conf = new java.util.HashMap();
+        Map<String, Object> conf = new HashMap();
         conf.put("java.security.auth.login.config", args[0]);
         at.prepare(conf);
-        Map<String, String> creds = new java.util.HashMap<String, String>();
+        Map<String, String> creds = new HashMap<>();
         at.populateCredentials(creds);
         Subject s = new Subject();
         at.populateSubject(s, creds);
@@ -121,11 +124,10 @@ public class AutoTGT implements IAutoCredentials, ICredentialsRenewer, IMetricsR
         //Log the user in and get the TGT
         try {
             Configuration loginConf = ClientAuthUtils.getConfiguration(conf);
-            ClientCallbackHandler clientCallbackHandler = new ClientCallbackHandler(loginConf);
+            ClientCallbackHandler clientCallbackHandler = new ClientCallbackHandler(conf);
 
             //login our user
-            Configuration.setConfiguration(loginConf);
-            LoginContext lc = new LoginContext(ClientAuthUtils.LOGIN_CONTEXT_CLIENT, clientCallbackHandler);
+            LoginContext lc = new LoginContext(ClientAuthUtils.LOGIN_CONTEXT_CLIENT, null, clientCallbackHandler, loginConf);
             try {
                 lc.login();
                 final Subject subject = lc.getSubject();
@@ -173,6 +175,7 @@ public class AutoTGT implements IAutoCredentials, ICredentialsRenewer, IMetricsR
 
     @SuppressWarnings("checkstyle:AbbreviationAsWordInName")
     private void populateSubjectWithTGT(Subject subject, Map<String, String> credentials) {
+        LOG.info("Populating TGT from credentials");
         KerberosTicket tgt = getTGT(credentials);
         if (tgt != null) {
             clearCredentials(subject, tgt);
@@ -205,10 +208,38 @@ public class AutoTGT implements IAutoCredentials, ICredentialsRenewer, IMetricsR
                          + "in your jar");
                 return;
             }
-            Method login = ugi.getMethod("loginUserFromSubject", Subject.class);
-            login.invoke(null, subject);
+
+            // We are just trying to do the following:
+            //
+            // Configuration conf = new Configuration();
+            // HadoopKerberosName.setConfiguration(conf);
+            // subject.getPrincipals().add(new User(tgt.getClient().toString(), AuthenticationMethod.KERBEROS, null));
+
+            Class<?> confClass = Class.forName("org.apache.hadoop.conf.Configuration");
+            Constructor confCons = confClass.getConstructor();
+            Object conf = confCons.newInstance();
+            Class<?> hknClass = Class.forName("org.apache.hadoop.security.HadoopKerberosName");
+            Method hknSetConf = hknClass.getMethod("setConfiguration", confClass);
+            hknSetConf.invoke(null, conf);
+
+            Class<?> authMethodClass = Class.forName("org.apache.hadoop.security.UserGroupInformation$AuthenticationMethod");
+            Object kerbAuthMethod = null;
+            for (Object authMethod : authMethodClass.getEnumConstants()) {
+                if ("KERBEROS".equals(authMethod.toString())) {
+                    kerbAuthMethod = authMethod;
+                    break;
+                }
+            }
+
+            Class<?> userClass = Class.forName("org.apache.hadoop.security.User");
+            Constructor userCons = userClass.getConstructor(String.class, authMethodClass, LoginContext.class);
+            userCons.setAccessible(true);
+            String name = getTGT(subject).getClient().toString();
+            Object user = userCons.newInstance(name, kerbAuthMethod, null);
+            subject.getPrincipals().add((Principal) user);
+
         } catch (Exception e) {
-            LOG.warn("Something went wrong while trying to initialize Hadoop through reflection. This version of hadoop "
+            LOG.error("Something went wrong while trying to initialize Hadoop through reflection. This version of hadoop "
                      + "may not be compatible.", e);
         }
     }

@@ -21,6 +21,7 @@ package org.apache.storm.localizer;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.Timer;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -77,6 +78,7 @@ public class AsyncLocalizer implements AutoCloseable {
     private final Timer blobCacheUpdateDuration;
     private final Timer blobLocalizationDuration;
     private final Meter numBlobUpdateVersionChanged;
+    private final Meter localResourceFileNotFoundWhenReleasingSlot;
 
     // track resources - user to resourceSet
     //ConcurrentHashMap is explicitly used everywhere in this class because it uses locks to guarantee atomicity for compute and
@@ -109,6 +111,8 @@ public class AsyncLocalizer implements AutoCloseable {
         this.blobCacheUpdateDuration = metricsRegistry.registerTimer("supervisor:blob-cache-update-duration");
         this.blobLocalizationDuration = metricsRegistry.registerTimer("supervisor:blob-localization-duration");
         this.numBlobUpdateVersionChanged = metricsRegistry.registerMeter("supervisor:num-blob-update-version-changed");
+        this.localResourceFileNotFoundWhenReleasingSlot
+                = metricsRegistry.registerMeter("supervisor:local-resource-file-not-found-when-releasing-slot");
         this.metricsRegistry = metricsRegistry;
         isLocalMode = ConfigUtils.isLocalMode(conf);
         fsOps = ops;
@@ -262,22 +266,26 @@ public class AsyncLocalizer implements AutoCloseable {
                     while (!done) {
                         try {
                             synchronized (blob) {
-                                long localVersion = blob.getLocalVersion();
-                                long remoteVersion = blob.getRemoteVersion(blobStore);
-                                if (localVersion != remoteVersion || !blob.isFullyDownloaded()) {
-                                    if (blob.isFullyDownloaded()) {
-                                        //Avoid case of different blob version
-                                        // when blob is not downloaded (first time download)
-                                        numBlobUpdateVersionChanged.mark();
+                                if (blob.isUsed()) {
+                                    long localVersion = blob.getLocalVersion();
+                                    long remoteVersion = blob.getRemoteVersion(blobStore);
+                                    if (localVersion != remoteVersion || !blob.isFullyDownloaded()) {
+                                        if (blob.isFullyDownloaded()) {
+                                            //Avoid case of different blob version
+                                            // when blob is not downloaded (first time download)
+                                            numBlobUpdateVersionChanged.mark();
+                                        }
+                                        Timer.Context t = singleBlobLocalizationDuration.time();
+                                        try {
+                                            long newVersion = blob.fetchUnzipToTemp(blobStore);
+                                            blob.informReferencesAndCommitNewVersion(newVersion);
+                                            t.stop();
+                                        } finally {
+                                            blob.cleanupOrphanedData();
+                                        }
                                     }
-                                    Timer.Context t = singleBlobLocalizationDuration.time();
-                                    try {
-                                        long newVersion = blob.fetchUnzipToTemp(blobStore);
-                                        blob.informReferencesAndCommitNewVersion(newVersion);
-                                        t.stop();
-                                    } finally {
-                                        blob.cleanupOrphanedData();
-                                    }
+                                } else {
+                                    LOG.debug("Skipping update of unused blob {}", blob);
                                 }
                             }
                             done = true;
@@ -452,12 +460,30 @@ public class AsyncLocalizer implements AutoCloseable {
             topoConfBlob.removeReference(pna);
         }
 
-        for (LocalResource lr : getLocalResources(pna)) {
-            try {
-                removeBlobReference(lr.getBlobName(), pna, lr.shouldUncompress());
-            } catch (Exception e) {
-                throw new IOException(e);
+
+        // ALERT: A possible race condition should have been resolved
+        // by separating the thread pools into downloadExecService and taskExecService
+        // https://github.com/apache/storm/pull/3153
+        // Will need further investigation if the race condition happens again
+        List<LocalResource> localResources;
+        try {
+            // Precondition1: Base blob stormconf.ser and stormcode.ser have been localized
+            // Precondition2: Both these two blob files are fully downloaded and proper permission been set
+            localResources = getLocalResources(pna);
+        } catch (IOException e) {
+            LOG.info("Port and assignment info: {}", pna);
+            if (e instanceof FileNotFoundException) {
+                localResourceFileNotFoundWhenReleasingSlot.mark();
+                LOG.warn("Local base blobs have not been downloaded yet. ", e);
+                return;
+            } else {
+                LOG.error("Unable to read local file. ", e);
+                throw e;
             }
+        }
+
+        for (LocalResource lr : localResources) {
+            removeBlobReference(lr.getBlobName(), pna, lr.shouldUncompress());
         }
     }
 
@@ -505,8 +531,7 @@ public class AsyncLocalizer implements AutoCloseable {
     }
 
     // ignores invalid user/topo/key
-    void removeBlobReference(String key, PortAndAssignment pna,
-                             boolean uncompress) throws AuthorizationException, KeyNotFoundException {
+    void removeBlobReference(String key, PortAndAssignment pna, boolean uncompress) {
         String user = pna.getOwner();
         String topo = pna.getToplogyId();
         ConcurrentMap<String, LocalizedResource> lrsrcSet = uncompress ? userArchives.get(user) : userFiles.get(user);

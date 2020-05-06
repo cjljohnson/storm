@@ -78,7 +78,7 @@ public class StormSubmitter {
         // Is the topology ZooKeeper authentication configuration unset?
         if (!conf.containsKey(Config.STORM_ZOOKEEPER_TOPOLOGY_AUTH_PAYLOAD)
                 || conf.get(Config.STORM_ZOOKEEPER_TOPOLOGY_AUTH_PAYLOAD) == null
-                || !validateZKDigestPayload((String)conf.get(Config.STORM_ZOOKEEPER_TOPOLOGY_AUTH_PAYLOAD))) {
+                || !validateZKDigestPayload((String) conf.get(Config.STORM_ZOOKEEPER_TOPOLOGY_AUTH_PAYLOAD))) {
             secretPayload = generateZookeeperDigestSecretPayload();
             LOG.info("Generated ZooKeeper secret payload for MD5-digest: " + secretPayload);
         }
@@ -106,27 +106,30 @@ public class StormSubmitter {
      * @param name        the name of the topology to push credentials to.
      * @param topoConf    the topology-specific configuration, if desired. See {@link Config}.
      * @param credentials the credentials to push.
+     * @return whether the pushed credential collection is non-empty. Return false if empty.
      * @throws AuthorizationException   if you are not authorized ot push credentials.
      * @throws NotAliveException        if the topology is not alive
      * @throws InvalidTopologyException if any other error happens
      */
-    public static void pushCredentials(String name, Map<String,Object> topoConf, Map<String,String> credentials)
+    public static boolean pushCredentials(String name, Map<String, Object> topoConf, Map<String, String> credentials)
         throws AuthorizationException, NotAliveException, InvalidTopologyException {
-        pushCredentials(name, topoConf, credentials, null);
+        return pushCredentials(name, topoConf, credentials, null);
     }
 
     /**
      * Push a new set of credentials to the running topology.
+     * Return false if push Creds map is empty, true otherwise.
      *
      * @param name        the name of the topology to push credentials to.
      * @param topoConf    the topology-specific configuration, if desired. See {@link Config}.
      * @param credentials the credentials to push.
      * @param expectedUser the user you expect the topology to be owned by.
+     * @return whether the pushed credential collection is non-empty. Return false if empty.
      * @throws AuthorizationException   if you are not authorized ot push credentials.
      * @throws NotAliveException        if the topology is not alive
      * @throws InvalidTopologyException if any other error happens
      */
-    public static void pushCredentials(String name, Map<String, Object> topoConf, Map<String, String> credentials, String expectedUser)
+    public static boolean pushCredentials(String name, Map<String, Object> topoConf, Map<String, String> credentials, String expectedUser)
         throws AuthorizationException, NotAliveException, InvalidTopologyException {
         topoConf = new HashMap(topoConf);
         topoConf.putAll(Utils.readCommandLineOpts());
@@ -135,7 +138,7 @@ public class StormSubmitter {
         Map<String, String> fullCreds = populateCredentials(conf, credentials);
         if (fullCreds.isEmpty()) {
             LOG.warn("No credentials were found to push to " + name);
-            return;
+            return false;
         }
         try {
             try (NimbusClient client = NimbusClient.getConfiguredClient(conf)) {
@@ -150,6 +153,7 @@ public class StormSubmitter {
         } catch (TException e) {
             throw new RuntimeException(e);
         }
+        return true;
     }
 
 
@@ -216,6 +220,10 @@ public class StormSubmitter {
     public static void submitTopologyAs(String name, Map<String, Object> topoConf, StormTopology topology, SubmitOptions opts,
                                         ProgressListener progressListener, String asUser)
         throws AlreadyAliveException, InvalidTopologyException, AuthorizationException, IllegalArgumentException {
+
+        //validate topology name first; nothing else should be done if it's invalid.
+        Utils.validateTopologyName(name);
+
         if (!Utils.isValidConf(topoConf)) {
             throw new IllegalArgumentException("Storm conf is not valid. Must be json-serializable");
         }
@@ -244,11 +252,8 @@ public class StormSubmitter {
         try {
             String serConf = JSONValue.toJSONString(topoConf);
             try (NimbusClient client = NimbusClient.getConfiguredClientAs(conf, asUser)) {
-                if (topologyNameExists(name, client)) {
-                    throw new RuntimeException("Topology with name `" + name + "` already exists on cluster");
-                }
-                if (!Utils.isValidKey(name)) {
-                    throw new IllegalArgumentException(name + " does not appear to be a valid topology name.");
+                if (!isTopologyNameAllowed(name, client)) {
+                    throw new RuntimeException("Topology name " + name + " is either not allowed or it already exists on the cluster");
                 }
 
                 // Dependency uploading only makes sense for distributed mode
@@ -431,9 +436,9 @@ public class StormSubmitter {
         });
     }
 
-    private static boolean topologyNameExists(String name, NimbusClient client) {
+    private static boolean isTopologyNameAllowed(String name, NimbusClient client) {
         try {
-            return !client.getClient().isTopologyNameAllowed(name);
+            return client.getClient().isTopologyNameAllowed(name);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

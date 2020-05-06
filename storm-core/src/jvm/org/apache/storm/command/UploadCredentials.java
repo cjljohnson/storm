@@ -42,6 +42,7 @@ public class UploadCredentials {
     public static void main(String[] args) throws Exception {
         Map<String, Object> cl = CLI.opt("f", "file", null)
                                     .opt("u", "user", null)
+                                    .boolOpt("e", "exception-when-empty")
                                     .arg("topologyName", CLI.FIRST_WINS)
                                     .optionalArg("rawCredentials", CLI.INTO_LIST)
                                     .parse(args);
@@ -49,6 +50,7 @@ public class UploadCredentials {
         String credentialFile = (String) cl.get("f");
         List<String> rawCredentials = (List<String>) cl.get("rawCredentials");
         String topologyName = (String) cl.get("topologyName");
+        Utils.validateTopologyName(topologyName);
 
         if (null != rawCredentials && ((rawCredentials.size() % 2) != 0)) {
             throw new RuntimeException("Need an even number of arguments to make a map");
@@ -81,8 +83,8 @@ public class UploadCredentials {
                     LOG.info("Using topology conf from {} as basis for getting new creds", topologyId);
 
                     Map<String, Object> commandLine = Utils.readCommandLineOpts();
-                    List<String> clCreds = (List<String>)commandLine.get(Config.TOPOLOGY_AUTO_CREDENTIALS);
-                    List<String> topoCreds = (List<String>)topologyConf.get(Config.TOPOLOGY_AUTO_CREDENTIALS);
+                    List<String> clCreds = (List<String>) commandLine.get(Config.TOPOLOGY_AUTO_CREDENTIALS);
+                    List<String> topoCreds = (List<String>) topologyConf.get(Config.TOPOLOGY_AUTO_CREDENTIALS);
                     
                     if (clCreds != null) {
                         Set<String> extra = new HashSet<>(clCreds);
@@ -111,7 +113,13 @@ public class UploadCredentials {
         // use the local setting for the login config rather than the topology's
         topologyConf.remove("java.security.auth.login.config");
 
-        StormSubmitter.pushCredentials(topologyName, topologyConf, credentialsMap, (String) cl.get("u"));
+        boolean throwExceptionForEmptyCreds = (boolean) cl.get("e");
+        boolean hasCreds = StormSubmitter.pushCredentials(topologyName, topologyConf, credentialsMap, (String) cl.get("u"));
+        if (!hasCreds && throwExceptionForEmptyCreds) {
+            String message = "No credentials were uploaded for " + topologyName;
+            LOG.error(message);
+            throw new RuntimeException(message);
+        }
         LOG.info("Uploaded new creds to topology: {}", topologyName);
     }
 }

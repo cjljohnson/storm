@@ -86,7 +86,9 @@ public class GenericResourceAwareStrategy extends BaseResourceAwareStrategy impl
         }
         Collection<ExecutorDetails> unassignedExecutors =
             new HashSet<>(this.cluster.getUnassignedExecutors(td));
-        LOG.debug("{} Num ExecutorsNeedScheduling: {}", td.getId(), unassignedExecutors.size());
+        LOG.debug("Topology: {} has {} executors which need scheduling.",
+                    td.getId(), unassignedExecutors.size());
+
         Collection<ExecutorDetails> scheduledTasks = new ArrayList<>();
         List<Component> spouts = this.getSpouts(td);
 
@@ -120,7 +122,8 @@ public class GenericResourceAwareStrategy extends BaseResourceAwareStrategy impl
 
         executorsNotScheduled.removeAll(scheduledTasks);
         if (!executorsNotScheduled.isEmpty()) {
-            LOG.warn("Scheduling {} left over task (most likely sys tasks)", executorsNotScheduled);
+            LOG.debug("Scheduling left over tasks {} (most likely sys tasks) from topology {}",
+                        executorsNotScheduled, td.getId());
             // schedule left over system tasks
             for (ExecutorDetails exec : executorsNotScheduled) {
                 if (Thread.currentThread().isInterrupted()) {

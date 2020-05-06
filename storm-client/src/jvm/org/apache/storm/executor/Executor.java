@@ -12,6 +12,12 @@
 
 package org.apache.storm.executor;
 
+import com.codahale.metrics.Counter;
+import com.codahale.metrics.Gauge;
+import com.codahale.metrics.Histogram;
+import com.codahale.metrics.Meter;
+import com.codahale.metrics.Snapshot;
+import com.codahale.metrics.Timer;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.UnknownHostException;
@@ -25,6 +31,7 @@ import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -110,12 +117,13 @@ public abstract class Executor implements Callable, JCQueue.Consumer {
     protected final Boolean hasEventLoggers;
     protected final boolean ackingEnabled;
     protected final ErrorReportingMetrics errorReportingMetrics;
-    protected final MpscChunkedArrayQueue<AddressedTuple> pendingEmits = new MpscChunkedArrayQueue<>(1024, (int)Math.pow(2, 30));
+    protected final MpscChunkedArrayQueue<AddressedTuple> pendingEmits = new MpscChunkedArrayQueue<>(1024, (int) Math.pow(2, 30));
     private final AddressedTuple flushTuple;
     protected ExecutorTransfer executorTransfer;
     protected ArrayList<Task> idToTask;
     protected int idToTaskBase;
     protected String hostname;
+    private static final double msDurationFactor = 1.0 / TimeUnit.MILLISECONDS.toNanos(1);
 
     protected Executor(WorkerState workerData, List<Long> executorId, Map<String, String> credentials, String type) {
         this.workerData = workerData;
@@ -297,11 +305,8 @@ public abstract class Executor implements Callable, JCQueue.Consumer {
             if (taskToMetricToRegistry != null) {
                 nameToRegistry = taskToMetricToRegistry.get(taskId);
             }
+            List<IMetricsConsumer.DataPoint> dataPoints = new ArrayList<>();
             if (nameToRegistry != null) {
-                IMetricsConsumer.TaskInfo taskInfo = new IMetricsConsumer.TaskInfo(
-                    hostname, workerTopologyContext.getThisWorkerPort(),
-                    componentId, taskId, Time.currentTimeSecs(), interval);
-                List<IMetricsConsumer.DataPoint> dataPoints = new ArrayList<>();
                 for (Map.Entry<String, IMetric> entry : nameToRegistry.entrySet()) {
                     IMetric metric = entry.getValue();
                     Object value = metric.getValueAndReset();
@@ -310,15 +315,108 @@ public abstract class Executor implements Callable, JCQueue.Consumer {
                         dataPoints.add(dataPoint);
                     }
                 }
-                if (!dataPoints.isEmpty()) {
-                    task.sendUnanchored(Constants.METRICS_STREAM_ID,
-                                        new Values(taskInfo, dataPoints), executorTransfer, pendingEmits);
-                    executorTransfer.flush();
-                }
+            }
+            addV2Metrics(taskId, dataPoints);
+
+            if (!dataPoints.isEmpty()) {
+                IMetricsConsumer.TaskInfo taskInfo = new IMetricsConsumer.TaskInfo(
+                        hostname, workerTopologyContext.getThisWorkerPort(),
+                        componentId, taskId, Time.currentTimeSecs(), interval);
+                task.sendUnanchored(Constants.METRICS_STREAM_ID,
+                        new Values(taskInfo, dataPoints), executorTransfer, pendingEmits);
+                executorTransfer.flush();
             }
         } catch (Exception e) {
             throw Utils.wrapInRuntime(e);
         }
+    }
+
+    // updates v1 metric dataPoints with v2 metric API data
+    private void addV2Metrics(int taskId, List<IMetricsConsumer.DataPoint> dataPoints) {
+        boolean enableV2MetricsDataPoints = ObjectReader.getBoolean(topoConf.get(Config.TOPOLOGY_ENABLE_V2_METRICS_TICK), false);
+        if (!enableV2MetricsDataPoints) {
+            return;
+        }
+        processGauges(taskId, dataPoints);
+        processCounters(taskId, dataPoints);
+        processHistograms(taskId, dataPoints);
+        processMeters(taskId, dataPoints);
+        processTimers(taskId, dataPoints);
+    }
+
+    private void processGauges(int taskId, List<IMetricsConsumer.DataPoint> dataPoints) {
+        Map<String, Gauge> gauges = workerData.getMetricRegistry().getTaskGauges(taskId);
+        for (Map.Entry<String, Gauge> entry : gauges.entrySet()) {
+            Object v = entry.getValue().getValue();
+            if (v instanceof Number) {
+                IMetricsConsumer.DataPoint dataPoint = new IMetricsConsumer.DataPoint(entry.getKey(), v);
+                dataPoints.add(dataPoint);
+            }
+        }
+    }
+
+    private void processCounters(int taskId, List<IMetricsConsumer.DataPoint> dataPoints) {
+        Map<String, Counter> counters = workerData.getMetricRegistry().getTaskCounters(taskId);
+        for (Map.Entry<String, Counter> entry : counters.entrySet()) {
+            Object value = entry.getValue().getCount();
+            IMetricsConsumer.DataPoint dataPoint = new IMetricsConsumer.DataPoint(entry.getKey(), value);
+            dataPoints.add(dataPoint);
+        }
+    }
+
+    private void processHistograms(int taskId, List<IMetricsConsumer.DataPoint> dataPoints) {
+        Map<String, Histogram> histograms = workerData.getMetricRegistry().getTaskHistograms(taskId);
+        for (Map.Entry<String, Histogram> entry : histograms.entrySet()) {
+            Snapshot snapshot =  entry.getValue().getSnapshot();
+            addSnapshotDatapoints(entry.getKey(), snapshot, dataPoints);
+            IMetricsConsumer.DataPoint dataPoint = new IMetricsConsumer.DataPoint(entry.getKey() + ".count", entry.getValue().getCount());
+            dataPoints.add(dataPoint);
+        }
+    }
+
+    private void processMeters(int taskId, List<IMetricsConsumer.DataPoint> dataPoints) {
+        Map<String, Meter> meters = workerData.getMetricRegistry().getTaskMeters(taskId);
+        for (Map.Entry<String, Meter> entry : meters.entrySet()) {
+            IMetricsConsumer.DataPoint dataPoint = new IMetricsConsumer.DataPoint(entry.getKey() + ".count", entry.getValue().getCount());
+            dataPoints.add(dataPoint);
+            addConvertedMetric(entry.getKey(), ".m1_rate", entry.getValue().getOneMinuteRate(), dataPoints);
+            addConvertedMetric(entry.getKey(), ".m5_rate", entry.getValue().getFiveMinuteRate(), dataPoints);
+            addConvertedMetric(entry.getKey(), ".m15_rate", entry.getValue().getFifteenMinuteRate(), dataPoints);
+            addConvertedMetric(entry.getKey(), ".mean_rate", entry.getValue().getMeanRate(), dataPoints);
+        }
+    }
+
+    private void processTimers(int taskId, List<IMetricsConsumer.DataPoint> dataPoints) {
+        Map<String, Timer> timers = workerData.getMetricRegistry().getTaskTimers(taskId);
+        for (Map.Entry<String, Timer> entry : timers.entrySet()) {
+            Snapshot snapshot =  entry.getValue().getSnapshot();
+            addSnapshotDatapoints(entry.getKey(), snapshot, dataPoints);
+            IMetricsConsumer.DataPoint dataPoint = new IMetricsConsumer.DataPoint(entry.getKey() + ".count", entry.getValue().getCount());
+            dataPoints.add(dataPoint);
+        }
+    }
+
+    private void addSnapshotDatapoints(String baseName, Snapshot snapshot, List<IMetricsConsumer.DataPoint> dataPoints) {
+        addConvertedMetric(baseName, ".max", snapshot.getMax(), dataPoints);
+        addConvertedMetric(baseName, ".mean", snapshot.getMean(), dataPoints);
+        addConvertedMetric(baseName, ".min", snapshot.getMin(), dataPoints);
+        addConvertedMetric(baseName, ".stddev", snapshot.getStdDev(), dataPoints);
+        addConvertedMetric(baseName, ".p50", snapshot.getMedian(), dataPoints);
+        addConvertedMetric(baseName, ".p75", snapshot.get75thPercentile(), dataPoints);
+        addConvertedMetric(baseName, ".p95", snapshot.get95thPercentile(), dataPoints);
+        addConvertedMetric(baseName, ".p98", snapshot.get98thPercentile(), dataPoints);
+        addConvertedMetric(baseName, ".p99", snapshot.get99thPercentile(), dataPoints);
+        addConvertedMetric(baseName, ".p999", snapshot.get999thPercentile(), dataPoints);
+    }
+
+    private void addConvertedMetric(String baseName, String suffix, double value, List<IMetricsConsumer.DataPoint> dataPoints) {
+        IMetricsConsumer.DataPoint dataPoint = new IMetricsConsumer.DataPoint(baseName + suffix, convertDuration(value));
+        dataPoints.add(dataPoint);
+    }
+
+    // converts timed codahale metric values from nanosecond to millisecond time scale
+    private double convertDuration(double duration) {
+        return duration * msDurationFactor;
     }
 
     protected void setupMetrics() {
@@ -559,5 +657,4 @@ public abstract class Executor implements Callable, JCQueue.Consumer {
     public void setLocalExecutorTransfer(ExecutorTransfer executorTransfer) {
         this.executorTransfer = executorTransfer;
     }
-
 }
