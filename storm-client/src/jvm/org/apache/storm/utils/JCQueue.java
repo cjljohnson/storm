@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+
 import org.apache.storm.metric.api.IStatefulObject;
 import org.apache.storm.metric.internal.RateTracker;
 import org.apache.storm.metrics2.JcMetrics;
@@ -150,6 +151,7 @@ public class JCQueue implements IStatefulObject, Closeable {
     private boolean tryPublishInternal(Object obj) {
         if (recvQueue.offer(obj)) {
             metrics.notifyArrivals(1);
+            jcMetrics.updateArrival(1);
             return true;
         }
         return false;
@@ -168,6 +170,7 @@ public class JCQueue implements IStatefulObject, Closeable {
             };
         int count = recvQueue.fill(supplier, objs.size());
         metrics.notifyArrivals(count);
+        jcMetrics.updateArrival(count);
         return count;
     }
 
@@ -482,4 +485,5 @@ public class JCQueue implements IStatefulObject, Closeable {
         }
 
     }
+
 }

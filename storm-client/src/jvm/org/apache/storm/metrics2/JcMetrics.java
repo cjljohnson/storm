@@ -12,16 +12,23 @@
 
 package org.apache.storm.metrics2;
 
+import com.codahale.metrics.Histogram;
+
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.apache.storm.utils.JCQueue;
 
 public class JcMetrics {
     private final SimpleGauge<Long> capacity;
     private final SimpleGauge<Long> population;
+    private final QueueArrival arrival;
 
     JcMetrics(SimpleGauge<Long> capacity,
-              SimpleGauge<Long> population) {
+              SimpleGauge<Long> population,
+              Histogram arrivalTimes) {
         this.capacity = capacity;
         this.population = population;
+        this.arrival = new QueueArrival(arrivalTimes);
     }
 
     public void setCapacity(Long capacity) {
@@ -35,5 +42,30 @@ public class JcMetrics {
     public void set(JCQueue.QueueMetrics metrics) {
         this.capacity.set(metrics.capacity());
         this.population.set(metrics.population());
+    }
+
+    public void updateArrival(int count) {
+        arrival.update(count);
+    }
+
+    public class QueueArrival {
+
+        private AtomicLong previous;
+        private Histogram arrivalTimes;
+
+
+        public QueueArrival(Histogram arrivalTimes) {
+
+            this.previous = new AtomicLong();
+            this.arrivalTimes = arrivalTimes;
+        }
+
+        public void update(int count) {
+            long time = System.nanoTime();
+            long oldTime = previous.getAndSet(time);
+            if (oldTime > 0) {
+                arrivalTimes.update(time - oldTime);
+            }
+        }
     }
 }

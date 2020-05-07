@@ -18,8 +18,11 @@ import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.Metric;
 import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.MetricRegistry.MetricSupplier;
 import com.codahale.metrics.MetricSet;
+import com.codahale.metrics.SlidingWindowReservoir;
 import com.codahale.metrics.Timer;
+
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -69,7 +72,9 @@ public class StormMetricRegistry {
     public JcMetrics jcMetrics(String name, String topologyId, String componentId, Integer taskId, Integer port) {
         SimpleGauge<Long> capacityGauge = gauge(0L, name + "-capacity", topologyId, componentId, taskId, port);
         SimpleGauge<Long> populationGauge = gauge(0L, name + "-population", topologyId, componentId, taskId, port);
-        return new JcMetrics(capacityGauge, populationGauge);
+        Histogram arrivalHistogram = histogram(name + "-arrival", topologyId, componentId, taskId, port, 
+            new SlidingHistoSupplier(2000));
+        return new JcMetrics(capacityGauge, populationGauge, arrivalHistogram);
     }
 
     public Meter meter(String name, WorkerTopologyContext context, String componentId, Integer taskId, String streamId) {
@@ -142,6 +147,14 @@ public class StormMetricRegistry {
         String metricName = metricName(name, context);
         Histogram histogram = registry.histogram(metricName);
         saveMetricTaskIdMapping(context.getThisTaskId(), metricName, histogram, taskIdHistograms);
+        return histogram;
+    }
+
+    public Histogram histogram(String name, String topologyId, String componentId, Integer taskId, Integer port, 
+        MetricSupplier<Histogram> supplier) {
+        String metricName = metricName(name, topologyId, componentId, taskId, port);
+        Histogram histogram = registry.histogram(metricName, supplier);
+        saveMetricTaskIdMapping(taskId, metricName, histogram, taskIdHistograms);
         return histogram;
     }
 
@@ -271,5 +284,19 @@ public class StormMetricRegistry {
 
     private String dotToUnderScore(String str) {
         return str.replace('.', '_');
+    }
+
+    public class SlidingHistoSupplier implements MetricSupplier<Histogram> {
+
+        private int size;
+    
+        public SlidingHistoSupplier(int size) {
+            this.size = size;
+        }
+    
+        @Override
+        public Histogram newMetric() {
+            return new Histogram(new SlidingWindowReservoir(size));
+        }
     }
 }
