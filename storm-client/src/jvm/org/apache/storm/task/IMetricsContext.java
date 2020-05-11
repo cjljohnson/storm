@@ -18,6 +18,8 @@ import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricSet;
 import com.codahale.metrics.Timer;
+import com.codahale.metrics.MetricRegistry.MetricSupplier;
+
 import org.apache.storm.metric.api.CombinedMetric;
 import org.apache.storm.metric.api.ICombiner;
 import org.apache.storm.metric.api.IMetric;
@@ -50,6 +52,8 @@ public interface IMetricsContext {
     Timer registerTimer(String name);
 
     Histogram registerHistogram(String name);
+
+    Histogram registerHistogram(String name, MetricSupplier<Histogram> supplier);
 
     Meter registerMeter(String name);
 
