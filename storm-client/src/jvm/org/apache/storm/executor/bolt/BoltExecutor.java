@@ -223,20 +223,20 @@ public class BoltExecutor extends Executor {
                 ((ICredentialsListener) taskObject).setCredentials(creds == null ? null : creds.get_creds());
             }
         } else {
-            IBolt boltObject = (IBolt) idToTask.get(taskId - idToTaskBase).getTaskObject();
             boolean isSampled = sampler.getAsBoolean();
             boolean isExecuteSampler = executeSampler.getAsBoolean();
-            Long now = (isSampled || isExecuteSampler) ? Time.currentTimeMillis() : null;
+            Long now = (isSampled || isExecuteSampler) ? System.nanoTime() : null;
             if (isSampled) {
                 tuple.setProcessSampleStartTime(now);
             }
             if (isExecuteSampler) {
                 tuple.setExecuteSampleStartTime(now);
             }
+            IBolt boltObject = (IBolt) idToTask.get(taskId - idToTaskBase).getTaskObject();
             boltObject.execute(tuple);
 
-            Long ms = tuple.getExecuteSampleStartTime();
-            long delta = (ms != null) ? Time.deltaMs(ms) : -1;
+            Long ns = tuple.getExecuteSampleStartTime();
+            long delta = (ns != null) ? System.nanoTime() - ns : -1;
             if (isDebug) {
                 LOG.info("Execute done TUPLE {} TASK: {} DELTA: {}", tuple, taskId, delta);
             }
@@ -246,7 +246,7 @@ public class BoltExecutor extends Executor {
                 new BoltExecuteInfo(tuple, taskId, delta).applyOn(topologyContext);
             }
             if (delta >= 0) {
-                stats.boltExecuteTuple(tuple.getSourceComponent(), tuple.getSourceStreamId(), delta);
+                stats.boltExecuteTuple(tuple.getSourceComponent(), tuple.getSourceStreamId(), delta / 1_000_000);
             }
         }
     }
