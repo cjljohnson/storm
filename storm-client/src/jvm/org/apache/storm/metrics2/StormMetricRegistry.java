@@ -150,12 +150,12 @@ public class StormMetricRegistry {
         return histogram;
     }
 
-    public Histogram histogram(String name, TopologyContext context, MetricSupplier<Histogram> supplier) {
-        String metricName = metricName(name, context);
-        Histogram histogram = registry.histogram(metricName, supplier);
-        saveMetricTaskIdMapping(context.getThisTaskId(), metricName, histogram, taskIdHistograms);
-        return histogram;
-    }
+    // public Histogram histogram(String name, TopologyContext context, MetricSupplier<Histogram> supplier) {
+    //     String metricName = metricName(name, context);
+    //     Histogram histogram = registry.histogram(metricName, supplier);
+    //     saveMetricTaskIdMapping(context.getThisTaskId(), metricName, histogram, taskIdHistograms);
+    //     return histogram;
+    // }
 
     public Histogram histogram(String name, String topologyId, String componentId, Integer taskId, Integer port, 
         MetricSupplier<Histogram> supplier) {

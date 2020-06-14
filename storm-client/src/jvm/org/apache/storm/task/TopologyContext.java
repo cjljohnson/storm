@@ -16,9 +16,9 @@ import com.codahale.metrics.Counter;
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
+import com.codahale.metrics.MetricRegistry.MetricSupplier;
 import com.codahale.metrics.MetricSet;
 import com.codahale.metrics.Timer;
-import com.codahale.metrics.MetricRegistry.MetricSupplier;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -412,10 +412,10 @@ public class TopologyContext extends WorkerTopologyContext implements IMetricsCo
         return metricRegistry.histogram(name, this);
     }
 
-    @Override
-    public Histogram registerHistogram(String name, MetricSupplier<Histogram> supplier) {
-        return metricRegistry.histogram(name, this, supplier);
-    }
+    // @Override
+    // public Histogram registerHistogram(String name, MetricSupplier<Histogram> supplier) {
+    //     return metricRegistry.histogram(name, this, supplier);
+    // }
 
     @Override
     public Meter registerMeter(String name) {
